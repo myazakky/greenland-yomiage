@@ -1,7 +1,6 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,57 +11,66 @@ import (
 	config "github.com/chun37/greenland-yomiage/general/internal/config"
 	"github.com/chun37/greenland-yomiage/general/internal/handler"
 	"github.com/chun37/greenland-yomiage/general/internal/initialize"
+	"github.com/chun37/greenland-yomiage/general/internal/listener"
 	"github.com/chun37/greenland-yomiage/general/internal/speaker"
 )
 
 // Variables used for command line parameters
 var (
-	Token   string
-	GuildID string
+	Token            string
+	GuildID          string
+	YomiageChannelID string
 )
 
 func init() {
-	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.StringVar(&GuildID, "g", "", "Slash Commands Guild")
-	flag.Parse()
+	Token = os.Getenv("DISCORD_TOKEN")
+	GuildID = os.Getenv("DISCORD_GUILD_ID")
+	YomiageChannelID = os.Getenv("DISCORD_YOMIAGE_CH_ID")
+
+	if Token == "" {
+		panic("環境変数`DISCORD_TOKEN`がセットされていません")
+	}
+	if GuildID == "" {
+		panic("環境変数`DISCORD_GUILD_ID`がセットされていません")
+	}
+	if YomiageChannelID == "" {
+		panic("環境変数`DISCORD_YOMIAGE_CH_ID`がセットされていません")
+	}
 }
 
 func main() {
-	// Create a new Discord session using the provided bot token.
 	dg, err := discordgo.New("Bot " + Token)
 	if err != nil {
-		log.Fatalf("error creating Discord session,", err)
+		log.Fatalf("認証に失敗しました: %+v\n", err)
 	}
 
-	// In this example, we only care about receiving message events.
 	dg.Identify.Intents = discordgo.IntentsAll
-
-	// Open a websocket connection to Discord and begin listening.
-	err = dg.Open()
-	if err != nil {
-		log.Fatalf("error opening connection,", err)
+	if err := dg.Open(); err != nil {
+		log.Fatalf("コネクションを確立できませんでした: %+v\n", err)
 	}
-
-	// Register the messageCreate func as a callback for MessageCreate events.
 
 	cfg := config.Config{
-		TargetChannelID: "773094074269958154",
+		TargetChannelID: YomiageChannelID,
 	}
 	externalDeps := initialize.NewExternalDependencies()
 	usecases := initialize.NewUsecases(externalDeps)
 	hp := initialize.NewHandlerProps(cfg, usecases)
 
 	messages := make(chan speaker.SpeechMessage, 10)
+	soundPacket := make(chan *discordgo.Packet, 1)
+	quiet := make(chan struct{})
 
-	hdr := handler.New(hp, messages)
-	dg.AddHandler(hdr.TTS(messages))
+	hdr := handler.New(hp, messages, soundPacket)
+	dg.AddHandler(hdr.TTS(messages, quiet))
 	dg.AddHandler(hdr.Disconnect)
 
-	interactionHandler, slashCommandIDs := hdr.Interaction(dg, GuildID)
+	interactionHandler, _ := hdr.Interaction(dg, GuildID)
 	dg.AddHandler(interactionHandler)
 
-	spkr := speaker.NewSpeaker(usecases.TTSUsecase, messages)
+	spkr := speaker.NewSpeaker(usecases.TTSUsecase, messages, quiet)
+	listener := listener.NewListener(soundPacket, quiet)
 	go spkr.Run()
+	go listener.Run()
 
 	// Wait here until CTRL-C or other term signal is received.
 	fmt.Println("Bot is now running.  Press CTRL-C to exit.")
@@ -80,12 +88,12 @@ func main() {
 	// 	log.Fatalf("Could not fetch registered commands: %v", err)
 	// }
 
-	for _, scid := range slashCommandIDs {
+	/*for _, scid := range slashCommandIDs {
 		err := dg.ApplicationCommandDelete(dg.State.User.ID, GuildID, scid)
 		if err != nil {
 			log.Panicf("Cannot delete command: %+v", err)
 		}
-	}
+	}*/
 
 	log.Println("Gracefully shutting down.")
 
